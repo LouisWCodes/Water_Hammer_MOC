@@ -1,4 +1,8 @@
 # Complete Water Hammer Analysis using Method of Characteristics (MOC)
+# This method is a 1-Dimensional analysis technique for fluid transients using the MOC
+# It is not intended to be a final answer rather a useful tool for engineers. Engineers should
+# use it in conjunction with other methods and tools - such as Bentley's Hammer Software or AFT's Impulse
+# for best results.
 # Louis Walker, Process Engineer, 2025
 
 from math import exp, sqrt, pi 
@@ -14,7 +18,7 @@ n_nodes = 215      # Number of nodes
 H_upstream = 70 # Upstream reservoir head (m)
 H_downstream = 60 # Downstream reservoir head (m)
 end_time = 600  # Total simulation time (s)
-xkvalve_0 = 0.1     # Initial valve resistance
+xkvalve_0 = 0.1    # Initial valve resistance - fully open butterfly valve 
 
 grav = 9.81         # Gravity (m/s²)
 density = 1000      # Water density (kg/m³)
@@ -52,6 +56,7 @@ class WaterhammerMOC:
         self.courant = self.wave_speed * self.dt / self.dx
         if abs(self.courant - 1.0) > 0.01:
            print(f"Warning: Courant number = {self.courant:.4f} (should be ≈1.0)") #Courant number should be approximately 1.0
+           # CFL is a necessary condition for convergence while solving hyperbolic PDEs numerically. CFL should be <= 1 for 1-D problems.
            print(f"Consider adjusting n_nodes for better accuracy")
             
         # Valve parameters
@@ -87,7 +92,6 @@ class WaterhammerMOC:
         self.B = self.wave_speed / self.grav # B 
         self.XF = self.f * self.dx / (2 * self.grav * self.diam * self.area**2) # Valve friction term
 
-        
         # Store results at intervals for long simulations
         self.store_interval = store_interval
         self.store_counter = 0
@@ -98,28 +102,47 @@ class WaterhammerMOC:
     #------------------Initial Steady-State------------------
     def initialise_steady_state(self):
         """Set up initial steady flow conditions"""
+        K = self.xkvalve_0  # Valve resistance coefficient
+        
+        # Match Fortran calculation exactly: QX=(HIN-HOUT)/(XKVALVE/AREA/19.62+XF*XL/DELTX)
+        valve_resistance_term = K / (self.area * 2 * self.grav)  # XKVALVE/AREA/19.62
+        pipe_resistance_term = self.XF * self.length / self.dx   # XF*XL/DELTX
+        
+        total_resistance = valve_resistance_term + pipe_resistance_term
+        
+        if total_resistance <= 0:
+            raise ValueError("Non-positive total resistance in initial flow calculation")
+        
+        # Calculate initial flow parameters
         delta_H = self.H_upstream - self.H_downstream
-        self.V_0 = np.sqrt(2 * self.grav * delta_H * self.diam / (self.f * self.length))
-        self.Q_0 = self.V_0 * self.area
-
+        
+        # This calculates Q^2, then takes square root for Q 
+        Q_squared = delta_H / total_resistance
+        self.Q_0 = np.sqrt(Q_squared)  # Flow rate (m³/s)
+        self.V_0 = self.Q_0 / self.area  # Velocity (m/s)
+        
         # Set uniform velocity and flow rate
         self.V[:] = self.V_0
         self.V_old[:] = self.V_0
         self.Q_current[:] = self.Q_0
         self.Q_old[:] = self.Q_0
 
-        # Linear head distribution
-        x = np.linspace(0, self.length, self.n_nodes) # Equally spaced positions along the pipe - i.e. establishes spatial domain
-        head_loss_gradient = self.f * self.V_0**2 / (2 * self.grav * self.diam) # Creates head loss gradient (m/m)
-        self.H = self.H_upstream - head_loss_gradient * x # Linear head distribution (m)
-        self.H_old[:] = self.H[:] # Update previous head (m)
+        # Linear head distribution accounting for pipe friction only
+        # (valve drop occurs at boundary, not distributed along pipe)
+        x = np.linspace(0, self.length, self.n_nodes)
+        head_loss_gradient = self.f * self.V_0**2 / (2 * self.grav * self.diam)
+        self.H = self.H_upstream - head_loss_gradient * x
+        self.H_old[:] = self.H[:]
 
         # Store initial conditions (t=0)
         self.store_results()
-        # Print initial conditions for user info
+        
+        # Print initial conditions for validation
         print(f"Initial conditions set:")
         print(f"  Initial velocity: {self.V_0:.3f} m/s")
         print(f"  Initial flow rate: {self.Q_0:.4f} m³/s")
+        print(f"  Valve resistance term: {valve_resistance_term:.6f} s²/m⁵")
+        print(f"  Pipe resistance term: {pipe_resistance_term:.6f} s²/m⁵")
         print(f"  Head at upstream: {self.H[0]:.2f} m")
         print(f"  Head at downstream: {self.H[-1]:.2f} m")
         print(f"  Time step: {self.dt:.4f} s")
@@ -129,10 +152,10 @@ class WaterhammerMOC:
     def calculate_characteristics(self):
         """Calculate C+ and C- characteristics using OLD timestep values"""
         for i in range(self.n_nodes):
-            dynamic_head = self.B * self.Q_old[i] / self.area
-            friction_head = self.XF * self.Q_old[i] * abs(self.Q_old[i])
-            self.CP[i] = self.H_old[i] + dynamic_head - friction_head
-            self.CM[i] = self.H_old[i] - dynamic_head - friction_head
+            dynamic_head = self.B * self.Q_old[i] / self.area # This calculates dyamic head i.e. this is B*VP
+            friction_head = self.XF * self.Q_old[i] * abs(self.Q_old[i]) 
+            self.CP[i] = self.H_old[i] + dynamic_head - friction_head # Friction is negative in the characteristic + positive (C+) direction
+            self.CM[i] = self.H_old[i] - dynamic_head + friction_head # Friction is positive in the characteristic - negative (C-) direction
 
     #----------------Solving the Interior Points------------------
     def solve_interior_points(self):
@@ -240,7 +263,7 @@ class WaterhammerMOC:
         self.H_old[:] = self.H[:]
         self.V_old[:] = self.V[:]
         self.Q_old[:] = self.Q_current[:]
-        
+    #---------Function checks for large changes in head which may cause extreme oscillations---------------
     def check_for_jumps(self, step_name):
         """Check for sudden value changes that could cause oscillations"""
         if hasattr(self, '_last_H'):
@@ -343,7 +366,6 @@ class WaterhammerMOC:
         plt.show()
 
 #------------------Test Setup------------------
-
 # Create and run the simulation
 if __name__ == "__main__":
     # Create MOC solver
