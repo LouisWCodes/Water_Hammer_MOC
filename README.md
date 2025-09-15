@@ -7,6 +7,7 @@ The current capabilites and limitations of this program are as follows
 - Single pipeline transient analysis: Currently the program is capable of modelling only one pipe, extending to network requires explicitly solving multiple ODEs at once.
 - Valve closure modelling: The program is currently designed for modelling valve closure - both rapid and gradual, and allows for users to input valve characteristics to model valve closure as realistically as possible. A future module for modelling pump stops and trips will be implemented at a later date.
 - Real-time visualization of pressure waves: Graphs showing pressure profile at outlet across time, valve opening % and flowrate acrosss time.
+  ![Profile Graphs](waterham_long_1.png)
 - Solver may take a while to compute for long simulations, for example a slow valve closure. The intention is to optimize looping and calculation to drastically reduce solve times, though this will occur at a future date.
 - 
 
